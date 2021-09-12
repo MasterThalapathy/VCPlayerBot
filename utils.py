@@ -23,6 +23,7 @@ from pyrogram.raw.types import InputChannel
 from pytgcalls.types import Update
 from user import group_call, USER
 from pytgcalls import StreamType
+from youtube_dl import YoutubeDL
 from pytgcalls import PyTgCalls
 from datetime import datetime
 from threading import Thread
@@ -35,7 +36,6 @@ import subprocess
 import asyncio
 import random
 import ffmpeg
-import pafy
 import json
 import time
 import sys
@@ -63,23 +63,35 @@ async def play():
     await join_call(audio_file, video_file, width, height)
 
 async def get_link(file):
-    try:
-        video = pafy.new(file)
-        streams = video.streams
-        url=""
-        for s in streams:
-            #prefer 640x360
-            if s.resolution == "640x360":
-                url=s.url
-                break
+    def_ydl_opts = {'quiet': True, 'prefer_insecure': False, "geo-bypass": True}
+    with YoutubeDL(def_ydl_opts) as ydl:
+        try:
+            ydl_info = ydl.extract_info(file, download=False)
+        except Exception as e:
+            LOGGER.error(f"Errors occured while getting link from youtube video {e}")
+            await skip()
+            return False
+        url=None
+        for each in ydl_info['formats']:
+            if each['width'] == 640 \
+                and each['acodec'] != 'none' \
+                    and each['vcodec'] != 'none':
+                    url=each['url']
+                    break #prefer 640x360
+            elif each['width'] \
+                and each['width'] <= 1280 \
+                    and each['acodec'] != 'none' \
+                        and each['vcodec'] != 'none':
+                        url=each['url']
+                        continue # any other format less than 1280
             else:
-                url=s.url
                 continue
-    except Exception as e:
-        LOGGER.error(f"Errors occured while getting link from youtube video {e}")
-        await skip()
-        return False
-    return url
+        if url:
+            return url
+        else:
+            LOGGER.error(f"Errors occured while getting link from youtube video - No Video Formats Found")
+            await skip()
+            return False
 
 async def skip():
     if Config.STREAM_LINK and len(Config.playlist) == 0:
@@ -183,9 +195,9 @@ async def get_raw_files(link):
         try:
             process.send_signal(SIGINT)
         except subprocess.TimeoutExpired:
-            process.kill()
+            process.terminate()
         except Exception as e:
-            LOGGER.error(f"Error while converting to raw files {e}")
+            LOGGER.error(f"Error while terminating ffmpeg {e}")
             pass
         del Config.FFMPEG_PROCESSES[Config.CHAT]
     Config.GET_FILE["old"] = os.listdir("./downloads")
@@ -194,11 +206,12 @@ async def get_raw_files(link):
     raw_video=f"./downloads/{new}_video.raw"
     #if not os.path.exists(raw_audio):
         #os.mkfifo(raw_audio)
-    #if not #os.path.exists(raw_video):
+    #if not os.path.exists(raw_video):
         #os.mkfifo(raw_video)
     width, height = await get_height_and_width(link)
     if not width or \
         not height:
+        Config.STREAM_LINK=False
         await skip()
     command = ["ffmpeg", "-y", "-i", link, "-f", "s16le", "-ac", "1", "-ar", "48000", raw_audio, "-f", "rawvideo", '-r', '30', '-pix_fmt', 'yuv420p', '-vf', f'scale={width}:{height}', raw_video]
     ffmpeg_log = open("ffmpeg.txt", "w+")
